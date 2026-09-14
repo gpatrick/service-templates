@@ -18,6 +18,7 @@ Everything you need to change is marked CHANGE ME. They run top to bottom:
 Section 7 is the runner; leave it alone.
 
     pip install -e ../client-core
+    pip install pydantic-settings
 """
 
 from __future__ import annotations
@@ -25,7 +26,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from datetime import date
 from decimal import Decimal
@@ -42,26 +42,16 @@ from pydantic import BaseModel, ConfigDict, Field
 # ==========================================================================
 #  1. CONFIG  --  CHANGE ME
 # ==========================================================================
+from settings import settings
 
-SOURCE_URL = os.environ["SRC_URL"]
-SOURCE_TOKEN_URL = os.environ["SRC_TOKEN_URL"]
-SOURCE_CLIENT_ID = os.environ["SRC_CLIENT_ID"]
-SOURCE_CLIENT_SECRET = os.environ["SRC_CLIENT_SECRET"]
-
-DEST_URL = os.environ["DST_URL"]
-DEST_TOKEN_URL = os.environ["DST_TOKEN_URL"]
-DEST_CLIENT_ID = os.environ["DST_CLIENT_ID"]
-DEST_CLIENT_SECRET = os.environ["DST_CLIENT_SECRET"]
-
-SOURCE_PATH = "/transactions"
-DEST_PATH = "/transactions"
-
-# Reads are safe to repeat, so they retry harder than writes.
-SOURCE_RETRY = RetryPolicy(max_attempts=4, max_elapsed=20.0)
-
-# POST is excluded from retries unless retry_non_idempotent is set. Do not set
-# it: a lost response would become two transactions.
-DEST_RETRY = RetryPolicy(max_attempts=2, max_elapsed=30.0)
+SOURCE_RETRY = RetryPolicy(
+    max_attempts=settings.source_max_attempts,
+    max_elapsed=settings.source_max_elapsed,
+)
+DEST_RETRY = RetryPolicy(
+    max_attempts=settings.dest_max_attempts,
+    max_elapsed=settings.dest_max_elapsed,
+)
 
 
 # ==========================================================================
@@ -162,7 +152,7 @@ class SourceClient(BaseClient):
             page number   page=cursor or 1
             offset        offset=cursor or 0, limit=PAGE_SIZE
         """
-        return await self._get(SOURCE_PATH, SourcePage, cursor=cursor)
+        return await self._get(settings.source_path, SourcePage, cursor=cursor)
 
 
 # ==========================================================================
@@ -172,7 +162,7 @@ class SourceClient(BaseClient):
 
 class DestinationClient(BaseClient):
     async def create(self, payload: DestinationBase) -> DestinationResponse:
-        return await self._post(DEST_PATH, DestinationResponse, body=payload)
+        return await self._post(settings.dest_path, DestinationResponse, body=payload)
 
 
 # ==========================================================================
@@ -250,24 +240,26 @@ def wire_body(payload: DestinationBase) -> dict:
 
 async def run(post: bool, limit: int | None) -> None:
     source = SourceClient(
-        SOURCE_URL,
+        settings.src_url,
         auth=client_credentials_auth(
-            SOURCE_TOKEN_URL,
-            client_id=SOURCE_CLIENT_ID,
-            client_secret=SOURCE_CLIENT_SECRET,
+            settings.src_token_url,
+            client_id=settings.src_client_id,
+            # get_secret_value at the single point of use. Everywhere else it
+            # reprs as ********, so a stray log line cannot leak it.
+            client_secret=settings.src_client_secret.get_secret_value(),
         ),
         retry=SOURCE_RETRY,
-        timeout=15.0,
+        timeout=settings.source_timeout,
     )
     destination = DestinationClient(
-        DEST_URL,
+        settings.dst_url,
         auth=client_credentials_auth(
-            DEST_TOKEN_URL,
-            client_id=DEST_CLIENT_ID,
-            client_secret=DEST_CLIENT_SECRET,
+            settings.dst_token_url,
+            client_id=settings.dst_client_id,
+            client_secret=settings.dst_client_secret.get_secret_value(),
         ),
         retry=DEST_RETRY,
-        timeout=30.0,
+        timeout=settings.dest_timeout,
     )
 
     try:
@@ -311,7 +303,7 @@ async def run(post: bool, limit: int | None) -> None:
 
             counts[kind] = counts.get(kind, 0) + 1
             print(f"TYPE     {kind}")
-            print(f"POST     {DEST_PATH}")
+            print(f"POST     {settings.dest_path}")
             print("BODY     " + _block(wire_body(payload)))
 
             if post:

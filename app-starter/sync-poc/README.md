@@ -70,3 +70,30 @@ will be wrong the same way next time, usually the model or the mapping.
 
 No checkpoint, no idempotency key, no retry of failed writes, no scheduling.
 **Re-running posts everything again.** Point it at a test environment.
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill it in. `.env` is gitignored; keep it
+that way.
+
+    pip install pydantic-settings
+    cp .env.example .env
+
+Real environment variables override `.env`, so a container or a systemd
+`EnvironmentFile` wins without anyone deleting the developer file.
+
+Missing values are reported together and the process exits 3:
+
+    configuration is incomplete:
+
+      SRC_URL: Field required
+      SRC_CLIENT_SECRET: Field required
+
+    Set them in .env or the environment. See .env.example.
+
+`extra="forbid"` means a typo in `.env` is an error rather than a line that
+silently does nothing. The two secrets are `SecretStr`, so they repr as
+`********` and only yield their value at the one call site that needs them.
+
+Defaults for paths, timeouts and retry budgets live in `settings.py` and can be
+overridden the same way.
