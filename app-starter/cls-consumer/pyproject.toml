@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cls-consumer"
+version = "0.1.0"
+description = "Example application consuming cls-client"
+requires-python = ">=3.10"
+
+# Direct references, because neither package is published to an index. Declare
+# them as bare names and `pip install .` fails with a confusing "no matching
+# distribution". Swap to git+ssh URLs once they have remotes:
+#
+#   "cls-client @ git+ssh://git@github.com/you/cls-client@v0.1.0",
+#
+# Edit the paths below to match where you unzipped them.
+dependencies = [
+    "client-core @ file:///REPLACE/WITH/ABSOLUTE/PATH/client-core",
+    "cls-client  @ file:///REPLACE/WITH/ABSOLUTE/PATH/cls-client",
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.5", "pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
