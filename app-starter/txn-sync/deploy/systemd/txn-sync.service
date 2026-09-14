@@ -1,0 +1,95 @@
+[Unit]
+Description=Sync transactions from the source system to the destination
+Documentation=file:/opt/txn-sync/README.md
+
+# The job's own retry handling covers a source that is slow to answer, so the
+# only real prerequisite is routable networking. network-online.target rather
+# than network.target: the latter fires before addresses are assigned, which
+# turns a boot-time run into a DNS failure that looks like a source outage.
+Wants=network-online.target
+After=network-online.target
+
+# Fires for any non-zero exit. The handler reads the actual code and routes by
+# severity; see txn-sync-failure.
+OnFailure=txn-sync-failure@%n.service
+
+[Service]
+# Run to completion, not a daemon. The program has no scheduling loop: it does
+# one window and exits. systemd owns the cadence, which is what makes the exit
+# code meaningful and what makes a missed run visible.
+Type=oneshot
+
+User=txn-sync
+Group=txn-sync
+
+WorkingDirectory=/opt/txn-sync
+EnvironmentFile=/etc/txn-sync/env
+ExecStart=/opt/txn-sync/.venv/bin/txn-sync
+
+# Creates and owns /var/lib/txn-sync, persisting across runs and reboots.
+# Point SYNC_CHECKPOINT_PATH and SYNC_DEAD_LETTER_PATH inside it. A checkpoint
+# on a volume that gets wiped means every run reposts the window: safe, because
+# the idempotency keys are deterministic, but it burns the whole budget.
+StateDirectory=txn-sync
+StateDirectoryMode=0700
+
+# Dead letters contain complete source payloads. 0600 rather than the default
+# 0644, so the file is still private if it is ever copied out of the 0700
+# state directory for analysis.
+UMask=0077
+
+# --- shutdown -------------------------------------------------------------
+#
+# SIGTERM asks the runner to stop gracefully: extract tasks stop producing, the
+# load task drains without posting, and the checkpoint is saved. That window is
+# the difference between resuming cleanly and reposting the tail of the run.
+KillSignal=SIGTERM
+
+# Must exceed the worst case for a single in-flight write. The destination
+# client uses a 30s timeout with a 30s retry budget, so 90 leaves headroom. Set
+# this too low and the process is killed mid-write, which is exactly the
+# lost-response case the idempotency key exists to absorb. Do not trim it.
+TimeoutStopSec=90
+
+# Ceiling on a hung run so it cannot still be holding the unit when tomorrow's
+# timer fires. Raise it if the account list grows; a run that is killed here
+# resumes from its checkpoint.
+TimeoutStartSec=30min
+
+# --- exit codes -----------------------------------------------------------
+#
+# 0  clean
+# 1  completed, some records dead-lettered
+# 2  stopped early: failure threshold crossed, or interrupted
+# 3  never started: bad configuration or credentials
+# 4  the run happened but its state could not be written to disk
+#
+# SuccessExitStatus is deliberately NOT set to 1. Treating dead letters as
+# success would make them invisible to systemd, and the dead-letter file is
+# something a person has to act on. The OnFailure handler is what distinguishes
+# "read this tomorrow" from "wake someone now".
+#
+# --- hardening ------------------------------------------------------------
+#
+# The job reads two HTTPS APIs and writes two files. It needs nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Blocks W^X mappings. Safe for this dependency set, since neither pydantic-core
+# nor httpx JITs anything. If a future dependency ships something that does, the
+# symptom is an immediate crash on import; drop this line rather than debugging
+# it.
+MemoryDenyWriteExecute=true

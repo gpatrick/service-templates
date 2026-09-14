@@ -1,0 +1,8 @@
+[Unit]
+Description=Route a txn-sync failure to alerting (%i)
+
+[Service]
+Type=oneshot
+User=txn-sync
+Group=txn-sync
+ExecStart=/opt/txn-sync/deploy/systemd/txn-sync-failure %i

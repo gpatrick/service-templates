@@ -1,0 +1,60 @@
+#!/bin/sh
+# Called by systemd when txn-sync.service exits non-zero. Reads the actual exit
+# code and routes by severity, because systemd's OnFailure does not pass it.
+#
+# The point of this script is the 1-versus-2-versus-3 distinction. Without it
+# every failure looks alike, and "read the dead-letter file when you get a
+# chance" gets paged at 3am while "the credentials are wrong" waits until
+# someone notices.
+#
+# WIRE THE marked section TO WHATEVER THE CLIENT ALREADY USES. Left as logger
+# calls on purpose: guessing at a webhook would be worse than obviously unfinished.
+
+set -eu
+
+unit="${1:?usage: txn-sync-failure <unit>}"
+status="$(systemctl show -p ExecMainStatus --value "$unit" 2>/dev/null || echo unknown)"
+
+case "$status" in
+  1)
+    severity=warning
+    summary="txn-sync completed with dead letters"
+    detail="Some records were set aside. Read the dead-letter file; no rush, and the next run is unaffected."
+    ;;
+  2)
+    severity=critical
+    summary="txn-sync stopped early"
+    detail="Failure threshold crossed, or the run was interrupted. The checkpoint is valid and a re-run resumes cleanly, but the next scheduled run will probably hit the same thing."
+    ;;
+  3)
+    severity=critical
+    summary="txn-sync never started"
+    detail="Bad configuration or credentials. No records were processed. Check the redacted config line in the journal."
+    ;;
+  4)
+    severity=critical
+    summary="txn-sync could not write its state"
+    detail="The run happened but the checkpoint or dead-letter file could not be written. Check the path and its permissions; under systemd both belong under /var/lib/txn-sync. Any dead letters were dumped to the journal instead, so recover them from there before the next run."
+    ;;
+  *)
+    severity=critical
+    summary="txn-sync failed with an unrecognized status ($status)"
+    detail="Not one of the documented exit codes. Likely killed by a signal or crashed before reporting."
+    ;;
+esac
+
+logger -t txn-sync -p "user.${severity}" -- "$summary: $detail"
+
+# --- alerting integration -------------------------------------------------
+# Replace with the client's mechanism. The variables above are everything a
+# webhook or mail call needs.
+#
+#   curl -sS -X POST "$ALERT_WEBHOOK" \
+#     -H 'content-type: application/json' \
+#     -d "{\"severity\":\"$severity\",\"summary\":\"$summary\",\"detail\":\"$detail\"}"
+#
+# Keep the journal line above regardless. It is the record that survives when
+# the alerting path itself is what is broken.
+# --------------------------------------------------------------------------
+
+exit 0

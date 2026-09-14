@@ -1,0 +1,34 @@
+[Unit]
+Description=Daily trigger for txn-sync
+Documentation=file:/opt/txn-sync/README.md
+
+[Timer]
+Unit=txn-sync.service
+
+# Adjust to the client's cut-off. Running shortly after the source settles the
+# previous business day is the usual choice; ask rather than assume, because
+# business date is a ledger concept and the boundary may not be midnight.
+OnCalendar=*-*-* 02:30:00
+
+AccuracySec=1min
+
+# Spreads the start if this ever runs on more than one host. Costs nothing here
+# and prevents a thundering herd against the source later.
+RandomizedDelaySec=5min
+
+# Deliberately NOT true.
+#
+# Persistent=true would fire immediately after downtime to catch up missed
+# triggers. This job does not need that: its window is anchored on today rather
+# than on the last successful run, so widening SYNC_WINDOW_DAYS covers an
+# outage with fewer edge cases than replaying fires. The overlap is free,
+# because records already across are skipped by the checkpoint and deduplicated
+# by their keys even if the checkpoint is gone.
+#
+# Catch-up also has a failure mode worth avoiding: after a long outage it fires
+# once, immediately, with the same one-day window it would have used anyway, so
+# it looks like recovery without actually covering the gap.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
