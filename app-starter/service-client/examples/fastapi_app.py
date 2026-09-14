@@ -25,12 +25,13 @@ Run with:  uvicorn examples.fastapi_app:app --reload
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from service_client import (
     ACCOUNTS_RETRY,
@@ -70,28 +71,55 @@ ACCOUNTS_CONNECTIONS = 40
 PAYMENTS_CONNECTIONS = 10
 
 
+class Settings(BaseSettings):
+    """Configuration, validated at startup.
+
+    Read inside lifespan rather than at import, deliberately. At import time
+    the process may not have its environment yet, and a test that wants to
+    supply values has already lost the chance. At startup the values are read
+    once, validated together, and every problem is reported in one message.
+
+    Real environment variables win over .env, so a container or systemd unit
+    overrides the developer file without anyone deleting anything.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="SERVICE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    base_url: str
+    token_url: str
+    client_id: str
+    client_secret: SecretStr
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Missing configuration fails here, before the server accepts traffic.
     # That is the point: better a clean startup failure than a service that
     # boots green and 500s on every request.
-    base_url = os.environ["SERVICE_BASE_URL"]
+    settings = Settings()
 
     auth = client_credentials_auth(
-        os.environ["SERVICE_TOKEN_URL"],
-        client_id=os.environ["SERVICE_CLIENT_ID"],
-        client_secret=os.environ["SERVICE_CLIENT_SECRET"],
+        settings.token_url,
+        client_id=settings.client_id,
+        # get_secret_value at the single point of use. Everywhere else the
+        # value reprs as ********, so a stray log line cannot leak it.
+        client_secret=settings.client_secret.get_secret_value(),
     )
 
     app.state.accounts = AccountsClient(
-        base_url,
+        settings.base_url,
         auth=auth,
         timeout=UPSTREAM_TIMEOUT,
         retry=ACCOUNTS_RETRY,
         max_connections=ACCOUNTS_CONNECTIONS,
     )
     app.state.payments = PaymentsClient(
-        base_url,
+        settings.base_url,
         auth=auth,
         timeout=UPSTREAM_TIMEOUT,
         retry=PAYMENTS_RETRY,

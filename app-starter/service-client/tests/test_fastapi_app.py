@@ -40,11 +40,15 @@ def _client(cls, handler):
 
 @pytest.fixture(autouse=True)
 def fake_env(monkeypatch):
-    """Lifespan reads these at startup and raises KeyError if absent.
+    """Lifespan validates these at startup through Settings.
 
     Set here rather than skipping lifespan, so every test also proves the
     startup path still constructs both clients without exploding. The real
     clients it builds are never used: dependency_overrides takes precedence.
+
+    Settings reads the environment when lifespan runs, not at import, which is
+    why monkeypatch works at all. Move it to module level and these fixtures
+    would be too late.
     """
     monkeypatch.setenv("SERVICE_BASE_URL", BASE_URL)
     monkeypatch.setenv("SERVICE_TOKEN_URL", f"{BASE_URL}/oauth/token")
@@ -320,3 +324,38 @@ def test_unknown_transaction_type_becomes_502(wire):
 
     assert response.status_code == 502
     assert "INTEREST_ACCRUAL" not in response.text
+
+
+def test_missing_configuration_fails_at_startup(monkeypatch):
+    """Better a clean startup failure than a service that boots green and
+    500s on every request.
+
+    Pydantic reports every missing field at once, so one restart tells you
+    everything rather than one variable per cycle.
+    """
+    from pydantic import ValidationError
+
+    for name in (
+        "SERVICE_BASE_URL",
+        "SERVICE_TOKEN_URL",
+        "SERVICE_CLIENT_ID",
+        "SERVICE_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    from examples.fastapi_app import Settings
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+
+    missing = {error["loc"][0] for error in excinfo.value.errors()}
+    assert missing == {"base_url", "token_url", "client_id", "client_secret"}
+
+
+def test_the_secret_does_not_appear_in_a_repr(monkeypatch):
+    """SecretStr is what keeps a credential out of a stray log line."""
+    from examples.fastapi_app import Settings
+
+    settings = Settings(_env_file=None)
+    assert "test-secret" not in repr(settings)
+    assert settings.client_secret.get_secret_value() == "test-secret"
